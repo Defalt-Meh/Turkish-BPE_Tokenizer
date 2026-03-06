@@ -84,9 +84,9 @@ Train with a 32K vocabulary:
 ./tools/train -i data/oscar_tr_clean.txt -o models/turkish_32k.tkmodel -v 32000
 ```
 
-The `-v` flag sets vocab size. The trainer prints progress every 100 merges by default. Use `-p 0` to shut it up.
+The `-v` flag sets vocab size. The trair prints progress every 100 merges by default. Use `-p 0` to shut it up.
 
-Normalization flags can be combined: `-n wl` for whitespace collapsing + Turkish lowercase. Default is whitespace only. For most LLM use cases, do not lowercase -- you want the model to learn casing.
+Normalization flags can be combid: `-n wl` for whitespace collapsing + Turkish lowercase. Default is whitespace only. For most LLM use cases, do not lowercase -- you want the model to learn casing.
 
 ### Encoding
 
@@ -206,7 +206,7 @@ These words from Beyaz Geceler encode as single tokens:
 | sokak | 584 | "street" |
 | gece | 609 | "night" -- the title word |
 
-"Petersburg" becoming a single token from a 12KB literary text is worth noting. The word appears often enough in the first chapter that BPE consumed it whole, all 10 bytes. "Nastenka" (the female lead) did not make it as a single token at vocab=1024 -- it decomposes into 5 tokens. With a larger vocabulary trained on more data it would.
+"Petersburg" becoming a single token from a 12KB literary text is worth noting. The word appears often enough in the first chapter that BPE consumed it whole, all 10 bytes. "Nastenka" (the female lead) did not make it as a single token at vocab=1024(Considering the story, she had it coming) -- it decomposes into 5 tokens. With a larger vocabulary trained on more data it would.
 
 ### Encoding examples
 
