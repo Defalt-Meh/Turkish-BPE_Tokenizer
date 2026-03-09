@@ -694,16 +694,28 @@ size_t TK_HOT tk_bpe_encode(const uint8_t *text, size_t text_len,
 
     if (vocab->num_merges == 0) {
         if (text_len > out_cap) return (size_t)-1;
-        for (size_t i = 0; i < text_len; i++)
-            out_ids[i] = (uint32_t)text[i];
+        for (size_t i = 0; i < text_len; i++) {
+            uint32_t byte_id = (uint32_t)text[i];
+            // Verify byte exists in vocab, fallback to space if missing
+            if (!tk_vocab_get(vocab, byte_id)) {
+                byte_id = (uint32_t)' ';
+            }
+            out_ids[i] = byte_id;
+        }
         return text_len;
     }
 
     if (text_len <= 128) {
         tk_sequence_t seq;
         if (tk_sequence_init(&seq, text_len) < 0) return (size_t)-1;
-        for (size_t i = 0; i < text_len; i++)
-            tk_sequence_append(&seq, (uint32_t)text[i]);
+        for (size_t i = 0; i < text_len; i++) {
+            uint32_t byte_id = (uint32_t)text[i];
+            // Verify byte exists in vocab, fallback to space if missing
+            if (!tk_vocab_get(vocab, byte_id)) {
+                byte_id = (uint32_t)' ';
+            }
+            tk_sequence_append(&seq, byte_id);
+        }
         for (uint32_t m = 0; m < vocab->num_merges; m++) {
             const tk_merge_t *mg = &vocab->merges[m];
             tk_sequence_apply_merge(&seq, mg->left, mg->right, mg->result);
@@ -723,7 +735,12 @@ size_t TK_HOT tk_bpe_encode(const uint8_t *text, size_t text_len,
     }
 
     for (size_t i = 0; i < text_len; i++) {
-        ids[i] = (uint32_t)text[i];
+        uint32_t byte_id = (uint32_t)text[i];
+        // Verify byte exists in vocab, fallback to space if missing
+        if (!tk_vocab_get(vocab, byte_id)) {
+            byte_id = (uint32_t)' ';
+        }
+        ids[i] = byte_id;
         next_arr[i] = (uint32_t)(i + 1);
         prev_arr[i] = (uint32_t)(i - 1);
     }

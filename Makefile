@@ -5,6 +5,7 @@
 #    make              — build library + CLI tools
 #    make lib          — build static library only
 #    make tools        — build CLI tools (links against lib)
+#    make bench        — build benchmark tool
 #    make tests        — build and run tests
 #    make clean        — remove all build artifacts
 # ─────────────────────────────────────────────────────────────────────
@@ -49,6 +50,10 @@ TOOL_SRCS = $(TOOL_DIR)/train.c   \
 
 TOOL_BINS = $(patsubst $(TOOL_DIR)/%.c, $(TOOL_DIR)/%, $(TOOL_SRCS))
 
+# ── Standalone tools ─────────────────────────────────────────────────
+
+BENCH_BIN = bench
+
 # ── Tests ────────────────────────────────────────────────────────────
 
 TEST_SRCS = $(TEST_DIR)/test_unicode.c   \
@@ -60,19 +65,22 @@ TEST_BINS = $(patsubst $(TEST_DIR)/%.c, $(BUILD_DIR)/%, $(TEST_SRCS))
 
 # ── Phony targets ───────────────────────────────────────────────────
 
-.PHONY: all lib tools tests clean run-tests
+.PHONY: all lib tools bench tests clean run-tests
 
-all: lib tools
+all: lib tools bench
 
 lib: $(LIB_NAME)
 
 tools: $(TOOL_BINS)
+
+bench: $(BENCH_BIN)
 
 tests: $(TEST_BINS) run-tests
 
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f $(TOOL_BINS)
+	rm -f $(BENCH_BIN)
 
 # ── Build rules ──────────────────────────────────────────────────────
 
@@ -99,6 +107,10 @@ $(TOOL_DIR)/decode: $(TOOL_DIR)/decode.c $(LIB_NAME)
 	$(CC) $(CFLAGS) $< -o $@ -L$(BUILD_DIR) -ltokenizer $(LDFLAGS)
 
 $(TOOL_DIR)/inspect: $(TOOL_DIR)/inspect.c $(LIB_NAME)
+	$(CC) $(CFLAGS) $< -o $@ -L$(BUILD_DIR) -ltokenizer $(LDFLAGS)
+
+# Link benchmark tool
+$(BENCH_BIN): bench.c $(LIB_NAME)
 	$(CC) $(CFLAGS) $< -o $@ -L$(BUILD_DIR) -ltokenizer $(LDFLAGS)
 
 # Compile and link tests

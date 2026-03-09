@@ -14,6 +14,8 @@
  *   -h            Show help
  */
 
+ // ./tools/train -i data/trial.txt -o models/trial.tkmodel -v 1024
+
 #include "tokenizer.h"
 #include "io.h"
 
