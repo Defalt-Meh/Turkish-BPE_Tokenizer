@@ -315,4 +315,4 @@ The architecture does not change. The data and the vocab size do.
 
 ## License
 
-Do what you want with it.
+MIT License (Do what you want with it.)
