@@ -18,6 +18,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define tk_vocab_size(tk) tk_vocab_size_of(tk) // Convenience macro for cleaner code. I was lazy to change all calls in this file.
+
 static void usage(const char *prog) {
     fprintf(stderr,
         "Usage: %s -m <model> [options]\n"

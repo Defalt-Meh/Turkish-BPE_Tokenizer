@@ -1,118 +1,144 @@
+/*
+ * ╔═══════════════════════════════════════════════════════════════════════╗
+ * ║  tokenizer.h — Public API for the Turkish BPE Tokenizer             ║
+ * ║                                                                     ║
+ * ║  Init, train, save, load, encode, decode. This is the only header   ║
+ * ║  most consumers need to include.                                    ║
+ * ╚═══════════════════════════════════════════════════════════════════════╝
+ */
+
 #ifndef TK_TOKENIZER_H
 #define TK_TOKENIZER_H
-
-#include "vocab.h"
-#include "bpe.h"
-#include "unicode.h"
 
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
 
-/*
- * tokenizer.h — Top-level tokenizer API.
- *
- * This is the single entry point for users who just want to:
- *   1. Train a tokenizer on a corpus.
- *   2. Load a trained tokenizer from disk.
- *   3. Encode text → token IDs.
- *   4. Decode token IDs → text.
- *
- * Wraps the lower-level vocab, BPE, unicode, and IO modules into
- * a clean, opaque interface.
- */
+/* Pull in sub-module headers for types used in the tokenizer struct.
+ * Consumers who only need the top-level API can ignore these. */
+#include "unicode.h"
+#include "vocab.h"
+#include "bpe.h"
 
-/* ── Configuration ───────────────────────────────────────────────────── */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ─────────────────────────────────────────────────────────────────────
+ *  Arena Allocator (internal, exposed for struct layout)
+ * ───────────────────────────────────────────────────────────────────── */
 
 typedef struct {
-    uint32_t vocab_size;       /* target vocabulary size (default: 32000) */
-    unsigned norm_flags;       /* TK_NORM_* flags applied before encoding */
-    bool     pretokenize;      /* run GPT-style pre-tokenization (default: true) */
-    int      verbose;          /* print progress every N merges (0=quiet) */
-    size_t   chunk_size;       /* corpus chunk size for file training (default: 64MB) */
+    uint8_t *base;       /* Slab base pointer                          */
+    size_t   offset;     /* Current bump position                      */
+    size_t   capacity;   /* Total slab size                            */
+} tk_arena_t;
+
+/* ─────────────────────────────────────────────────────────────────────
+ *  Configuration
+ * ───────────────────────────────────────────────────────────────────── */
+
+typedef struct {
+    uint32_t vocab_size;     /* Target vocabulary size (incl. 256 base)  */
+    uint32_t norm_flags;     /* TK_NORM_* flags for normalization        */
+    bool     pretokenize;    /* Apply GPT-style pre-tokenization         */
+    uint32_t verbose;        /* Print progress every N merges (0=quiet)  */
+    size_t   chunk_size;     /* Chunk size for file-based training       */
 } tk_config_t;
 
-/* Returns a config with sensible defaults. */
 tk_config_t tk_config_default(void);
 
-/* ── Tokenizer handle ────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────
+ *  Tokenizer
+ * ───────────────────────────────────────────────────────────────────── */
 
 typedef struct {
-    tk_vocab_t  vocab;
-    tk_config_t config;
-    bool        trained;
+    tk_config_t  config;
+    tk_vocab_t   vocab;
+    tk_arena_t   encode_arena;   /* Zero-alloc encode scratch space    */
+    bool         trained;
 } tk_tokenizer_t;
 
-/* ── Lifecycle ───────────────────────────────────────────────────────── */
-
-/* Initialize a new, untrained tokenizer with the given config.
- * Returns 0 on success. */
-int tk_init(tk_tokenizer_t *tk, const tk_config_t *config);
-
-/* Free all resources. */
+/* Lifecycle */
+int  tk_init(tk_tokenizer_t *tk, const tk_config_t *config);
 void tk_free(tk_tokenizer_t *tk);
 
-/* ── Training ────────────────────────────────────────────────────────── */
-
-/* Train on an in-memory UTF-8 buffer. */
+/* Training */
 int tk_train(tk_tokenizer_t *tk, const uint8_t *text, size_t len);
-
-/* Train on a file (uses mmap, handles large corpora). */
 int tk_train_file(tk_tokenizer_t *tk, const char *path);
 
-/* ── Persistence ─────────────────────────────────────────────────────── */
-
-/* Save trained tokenizer to a .tkmodel file. */
+/* Persistence */
 int tk_save(const tk_tokenizer_t *tk, const char *path);
-
-/* Load a tokenizer from a .tkmodel file.
- * `tk` should be uninitialized; this sets everything up. */
 int tk_load(tk_tokenizer_t *tk, const char *path);
 
-/* ── Encoding / Decoding ─────────────────────────────────────────────── */
-
-/*
- * Encode a UTF-8 string into token IDs.
- *
- * Applies normalization (if configured), pre-tokenization, and BPE.
- *
- *   text / len   — input UTF-8 string
- *   out_ids      — caller-provided output buffer
- *   out_cap      — capacity of out_ids
- *
- * Returns the number of tokens produced, or (size_t)-1 on error.
- * If the output buffer is too small, returns (size_t)-1 and you should
- * retry with a larger buffer (a safe upper bound is `len` tokens).
- */
+/* Encoding */
 size_t tk_encode(tk_tokenizer_t *tk,
                  const uint8_t *text, size_t len,
                  uint32_t *out_ids, size_t out_cap);
 
-/*
- * Decode token IDs back into a UTF-8 byte sequence.
- *
- *   ids / num_ids — input token IDs
- *   out           — caller-provided output buffer
- *   out_cap       — capacity of out buffer
- *
- * Returns number of bytes written, or (size_t)-1 on error.
- */
+/* Decoding */
 size_t tk_decode(const tk_tokenizer_t *tk,
                  const uint32_t *ids, size_t num_ids,
                  uint8_t *out, size_t out_cap);
 
-/* ── Utilities ───────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────
+ *  Batch Encoding / Decoding
+ *
+ *  For bulk operations. Amortizes overhead across multiple texts.
+ * ───────────────────────────────────────────────────────────────────── */
 
-/* Get the vocabulary size of a trained tokenizer. */
-uint32_t tk_vocab_size(const tk_tokenizer_t *tk);
+typedef struct {
+    const uint8_t *text;     /* Input UTF-8 text                        */
+    size_t         len;      /* Input length in bytes                   */
+} tk_batch_input_t;
 
-/* Get the byte representation of a token ID. Returns NULL if invalid. */
-const uint8_t *tk_token_bytes(const tk_tokenizer_t *tk, uint32_t id, uint16_t *out_len);
+typedef struct {
+    uint32_t *ids;           /* Caller-allocated output buffer          */
+    size_t    cap;           /* Capacity of ids buffer                  */
+    size_t    len;           /* [out] tokens written, or (size_t)-1     */
+} tk_batch_result_t;
 
-/* Look up the ID for a byte sequence. Returns (uint32_t)-1 if not found. */
-uint32_t tk_token_to_id(const tk_tokenizer_t *tk, const uint8_t *bytes, uint16_t len);
+int tk_encode_batch(tk_tokenizer_t *tk,
+                    const tk_batch_input_t *inputs, size_t num_inputs,
+                    tk_batch_result_t *results);
 
-/* Print tokenizer stats to stderr: vocab size, merge count, etc. */
+typedef struct {
+    const uint32_t *ids;     /* Input token IDs                         */
+    size_t          num_ids; /* Number of token IDs                     */
+} tk_decode_input_t;
+
+typedef struct {
+    uint8_t *out;            /* Caller-allocated output buffer          */
+    size_t   cap;            /* Capacity of output buffer               */
+    size_t   len;            /* [out] bytes written, or (size_t)-1      */
+} tk_decode_result_t;
+
+int tk_decode_batch(const tk_tokenizer_t *tk,
+                    const tk_decode_input_t *inputs, size_t num_inputs,
+                    tk_decode_result_t *results);
+
+/* ─────────────────────────────────────────────────────────────────────
+ *  Introspection & Utilities
+ * ───────────────────────────────────────────────────────────────────── */
+
+uint32_t        tk_vocab_size_of(const tk_tokenizer_t *tk);
+const uint8_t  *tk_token_bytes(const tk_tokenizer_t *tk, uint32_t id,
+                                uint16_t *out_len);
+uint32_t        tk_token_to_id(const tk_tokenizer_t *tk,
+                                const uint8_t *bytes, uint16_t len);
+
+/* Benchmark: encode `iterations` times, report throughput */
+void tk_encode_throughput(tk_tokenizer_t *tk,
+                          const uint8_t *text, size_t len,
+                          size_t iterations,
+                          double *out_bytes_per_sec,
+                          double *out_tokens_per_sec);
+
+/* Print tokenizer stats to stderr */
 void tk_print_stats(const tk_tokenizer_t *tk);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TK_TOKENIZER_H */
