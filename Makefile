@@ -11,7 +11,7 @@
 # ─────────────────────────────────────────────────────────────────────
 
 CC       = gcc
-CFLAGS   = -Wall -Wextra -Wpedantic -std=c11 -O2 -Iinclude
+CFLAGS   = -Wall -Wextra -Wpedantic -std=c11 -O2 -Iinclude -I$(SRC_DIR)
 LDFLAGS  =
 AR       = ar
 ARFLAGS  = rcs
@@ -35,10 +35,16 @@ BUILD_DIR = build
 LIB_SRCS  = $(SRC_DIR)/unicode.c \
             $(SRC_DIR)/vocab.c   \
             $(SRC_DIR)/io.c      \
-            $(SRC_DIR)/bpe.c     \
             $(SRC_DIR)/tokenizer.c
 
-LIB_OBJS  = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(LIB_SRCS))
+BPE_SRCS  = $(SRC_DIR)/bpe/pair_table.c  \
+            $(SRC_DIR)/bpe/morphology.c   \
+            $(SRC_DIR)/bpe/sequence.c     \
+            $(SRC_DIR)/bpe/train.c        \
+            $(SRC_DIR)/bpe/encode.c
+
+LIB_OBJS  = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(LIB_SRCS)) \
+            $(patsubst $(SRC_DIR)/bpe/%.c, $(BUILD_DIR)/bpe/%.o, $(BPE_SRCS))
 LIB_NAME  = $(BUILD_DIR)/libtokenizer.a
 
 # ── CLI tools ────────────────────────────────────────────────────────
@@ -84,12 +90,16 @@ clean:
 
 # ── Build rules ──────────────────────────────────────────────────────
 
-# Create build directory
-$(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)
+# Create build directories
+$(BUILD_DIR) $(BUILD_DIR)/bpe:
+	mkdir -p $(BUILD_DIR)/bpe
 
-# Compile library sources
+# Compile top-level library sources
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Compile bpe/ sub-module sources
+$(BUILD_DIR)/bpe/%.o: $(SRC_DIR)/bpe/%.c | $(BUILD_DIR)/bpe
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Archive into static library

@@ -180,7 +180,7 @@ static void *tk_arena_alloc(tk_arena_t *a, size_t size, size_t align) {
 tk_config_t tk_config_default(void) {
     return (tk_config_t){
         .vocab_size  = 32000,
-        .norm_flags  = TK_NORM_WHITESPACE,
+        .norm_flags  = 0,
         .pretokenize = true,
         .verbose     = 100,
         .chunk_size  = 64 * 1024 * 1024,  /* 64 MiB */
