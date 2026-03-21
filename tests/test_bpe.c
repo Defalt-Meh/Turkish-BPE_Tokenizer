@@ -198,7 +198,7 @@ static void test_save_load(void) {
     ASSERT(tk_load(&tk2, path) == 0, "load model");
 
     /* Verify same vocab size and merge count */
-    ASSERT(tk_vocab_size(&tk1) == tk_vocab_size(&tk2),
+    ASSERT(tk_vocab_size_of(&tk1) == tk_vocab_size_of(&tk2),
            "vocab sizes match after load");
     ASSERT(tk1.vocab.num_merges == tk2.vocab.num_merges,
            "merge counts match after load");

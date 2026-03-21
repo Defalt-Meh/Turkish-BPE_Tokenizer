@@ -23,17 +23,21 @@ typedef struct tk_pair_entry {
 
 typedef struct {
     uint64_t *keys;       /* packed (left<<32|right), EMPTY=0xFF..FF */
-    int64_t  *counts;     /* parallel count array */
+    int64_t  *counts;     /* parallel count array (single allocation with keys) */
     uint32_t  num_slots;  /* always power of two */
     uint32_t  mask;       /* num_slots - 1 */
     uint32_t  num_entries;
 } tk_pair_table_t;
 
-int  tk_pair_table_init(tk_pair_table_t *pt, uint32_t min_slots);
-void tk_pair_table_free(tk_pair_table_t *pt);
+int  tk_pair_table_init (tk_pair_table_t *pt, uint32_t min_slots);
+void tk_pair_table_free (tk_pair_table_t *pt);
 void tk_pair_table_clear(tk_pair_table_t *pt);
-int  tk_pair_table_add(tk_pair_table_t *pt, uint32_t left,
-                       uint32_t right, int64_t count);
+int  tk_pair_table_add  (tk_pair_table_t *pt, uint32_t left,
+                         uint32_t right, int64_t count);
+int64_t tk_pair_table_get(const tk_pair_table_t *pt,
+                          uint32_t left, uint32_t right);
+bool tk_pair_table_best_r(const tk_pair_table_t *pt,
+                          tk_pair_entry_t *out);
 const tk_pair_entry_t *tk_pair_table_best(const tk_pair_table_t *pt);
 
 /* ── token sequence (doubly-linked list, pool-allocated) ──────────── */
@@ -53,15 +57,19 @@ typedef struct {
     size_t     length;
 } tk_sequence_t;
 
-int    tk_sequence_init(tk_sequence_t *seq, size_t max_nodes);
-void   tk_sequence_free(tk_sequence_t *seq);
-void   tk_sequence_clear(tk_sequence_t *seq);
-int    tk_sequence_append(tk_sequence_t *seq, uint32_t id);
+int    tk_sequence_init      (tk_sequence_t *seq, size_t max_nodes);
+void   tk_sequence_free      (tk_sequence_t *seq);
+void   tk_sequence_clear     (tk_sequence_t *seq);
+int    tk_sequence_append    (tk_sequence_t *seq, uint32_t id);
 size_t tk_sequence_apply_merge(tk_sequence_t *seq, uint32_t left,
                                uint32_t right, uint32_t result);
 void   tk_sequence_count_pairs(const tk_sequence_t *seq, tk_pair_table_t *pt);
-size_t tk_sequence_to_ids(const tk_sequence_t *seq, uint32_t *out,
-                          size_t out_cap);
+size_t tk_sequence_to_ids    (const tk_sequence_t *seq, uint32_t *out,
+                              size_t out_cap);
+int    tk_sequence_init_from_ids(tk_sequence_t *seq, const uint32_t *ids,
+                                size_t count);
+int    tk_sequence_append_bytes(tk_sequence_t *seq, const uint8_t *bytes,
+                                size_t len);
 
 /* ── training config ──────────────────────────────────────────────── */
 
@@ -78,7 +86,36 @@ int tk_bpe_train(const uint8_t *text, size_t text_len,
 int tk_bpe_train_file(const char *path, tk_vocab_t *vocab,
                       const tk_train_config_t *config, size_t chunk_size);
 
-/* ── encoding / decoding ──────────────────────────────────────────── */
+/* ── merge-rank index (used by encoder, exposed for cache reuse) ──── */
+
+typedef struct {
+    uint64_t *keys;       /* pack_pair keys, PAIR_EMPTY = vacant       */
+    uint32_t *ranks;      /* merge rank (index into vocab->merges[])   */
+    uint32_t  mask;       /* num_slots - 1                             */
+} merge_index_t;
+
+/* ── persistent BPE encoder ───────────────────────────────────────── *
+ *
+ * Build once at model load time, reuse for all encode calls.
+ * Caches the merge-rank hash table and byte→token mapping so the
+ * hot path does zero heap allocations for typical inputs.           */
+
+typedef struct {
+    const tk_vocab_t *vocab;        /* weak reference, must outlive encoder */
+    merge_index_t     mi;           /* cached merge-rank hash table        */
+    uint32_t          byte_ids[256];/* direct byte → token-id mapping      */
+    bool              has_mi;       /* false if vocab has no merges         */
+} tk_bpe_encoder_t;
+
+int    tk_bpe_encoder_init(tk_bpe_encoder_t *enc, const tk_vocab_t *vocab);
+void   tk_bpe_encoder_free(tk_bpe_encoder_t *enc);
+
+/* Fast encode using a persistent encoder (preferred API). */
+size_t tk_bpe_encode_with(const tk_bpe_encoder_t *enc,
+                          const uint8_t *text, size_t text_len,
+                          uint32_t *out_ids, size_t out_cap);
+
+/* ── encoding / decoding (legacy — builds encoder per call) ───────── */
 
 size_t tk_bpe_encode(const uint8_t *text, size_t text_len,
                      const tk_vocab_t *vocab,

@@ -53,10 +53,12 @@ tk_config_t tk_config_default(void);
  * ───────────────────────────────────────────────────────────────────── */
 
 typedef struct {
-    tk_config_t  config;
-    tk_vocab_t   vocab;
-    tk_arena_t   encode_arena;   /* Zero-alloc encode scratch space    */
-    bool         trained;
+    tk_config_t       config;
+    tk_vocab_t        vocab;
+    tk_arena_t        encode_arena;   /* Zero-alloc encode scratch space    */
+    tk_bpe_encoder_t  encoder;        /* Cached merge index + byte table    */
+    bool              trained;
+    bool              encoder_ready;  /* true after encoder is initialised  */
 } tk_tokenizer_t;
 
 /* Lifecycle */

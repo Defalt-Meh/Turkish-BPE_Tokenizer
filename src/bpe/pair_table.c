@@ -1,5 +1,29 @@
 /*
  * bpe/pair_table.c — open-addressing hash table for (left,right) pair counts.
+ *
+ * Improvements over the original:
+ *
+ *   1. Single contiguous allocation for keys[] and counts[].  One
+ *      malloc / free / realloc instead of two; the two arrays land in
+ *      adjacent memory so the prefetcher can pull both on the same
+ *      cache-line stream.
+ *
+ *   2. Tombstone-aware entry counting.  Inserting into a PAIR_TOMB
+ *      slot no longer inflates num_entries, so the load-factor check
+ *      stays accurate across long incremental-update runs.
+ *
+ *   3. Compacting resize — entries with count ≤ 0 are silently dropped
+ *      during resize, acting as a free garbage-collection pass.  This
+ *      matters for the incremental training loop in train.c which
+ *      decrements counts to zero without removing the key.
+ *
+ *   4. tk_pair_table_best() no longer uses a static local.  The caller
+ *      passes a tk_pair_entry_t* and gets back a bool.  This is
+ *      thread-safe and lets the caller hold multiple results.
+ *      (A thin wrapper preserves the old return-pointer API so nothing
+ *      else needs to change right now.)
+ *
+ *   5. New tk_pair_table_get() for direct count queries.
  */
 #include "internal.h"
 
@@ -14,18 +38,41 @@ static uint32_t next_pow2_32(uint32_t v) {
     return v + 1;
 }
 
+/* Allocate a single buffer holding keys[n] followed by counts[n].
+ * Returns the raw pointer (caller frees).  Sets *out_keys, *out_counts
+ * to the two sub-arrays and fills keys with PAIR_EMPTY. */
+static void *alloc_table(uint32_t n, uint64_t **out_keys,
+                         int64_t **out_counts) {
+    /* Ensure counts[] starts on an 8-byte boundary.  Both uint64_t and
+     * int64_t are 8 bytes, and n is always a power of two ≥ 1024, so
+     * keys[n] already ends on an aligned address.  No padding needed. */
+    size_t total = (size_t)n * sizeof(uint64_t) +
+                   (size_t)n * sizeof(int64_t);
+    void *buf = malloc(total);
+    if (!buf) return NULL;
+
+    *out_keys   = (uint64_t *)buf;
+    *out_counts = (int64_t *)((uint64_t *)buf + n);
+
+    memset(*out_keys, 0xFF, n * sizeof(uint64_t));   /* PAIR_EMPTY */
+    return buf;
+}
+
 /* ── init / free / clear ──────────────────────────────────────────── */
 
 int tk_pair_table_init(tk_pair_table_t *pt, uint32_t min_slots) {
     uint32_t n = next_pow2_32(min_slots < 1024 ? 1024 : min_slots);
-    pt->keys   = (uint64_t *)malloc(n * sizeof(uint64_t));
-    pt->counts = (int64_t  *)malloc(n * sizeof(int64_t));
-    if (!pt->keys || !pt->counts) {
-        free(pt->keys); free(pt->counts);
+
+    uint64_t *keys;
+    int64_t  *counts;
+    void *buf = alloc_table(n, &keys, &counts);
+    if (!buf) {
         pt->keys = NULL; pt->counts = NULL;
         return -1;
     }
-    memset(pt->keys, 0xFF, n * sizeof(uint64_t));
+
+    pt->keys        = keys;
+    pt->counts      = counts;
     pt->num_slots   = n;
     pt->mask        = n - 1;
     pt->num_entries = 0;
@@ -33,8 +80,8 @@ int tk_pair_table_init(tk_pair_table_t *pt, uint32_t min_slots) {
 }
 
 void tk_pair_table_free(tk_pair_table_t *pt) {
+    /* keys points to the base of the single allocation. */
     free(pt->keys);
-    free(pt->counts);
     pt->keys        = NULL;
     pt->counts      = NULL;
     pt->num_entries = 0;
@@ -45,7 +92,7 @@ void tk_pair_table_clear(tk_pair_table_t *pt) {
     pt->num_entries = 0;
 }
 
-/* ── resize ───────────────────────────────────────────────────────── */
+/* ── resize (with compaction) ─────────────────────────────────────── */
 
 static int pair_table_resize(tk_pair_table_t *pt) {
     uint32_t  old_n    = pt->num_slots;
@@ -55,29 +102,36 @@ static int pair_table_resize(tk_pair_table_t *pt) {
     uint32_t new_n    = old_n * 2;
     uint32_t new_mask = new_n - 1;
 
-    uint64_t *new_keys = (uint64_t *)malloc(new_n * sizeof(uint64_t));
-    int64_t  *new_cnt  = (int64_t  *)malloc(new_n * sizeof(int64_t));
-    if (!new_keys || !new_cnt) {
-        free(new_keys); free(new_cnt);
-        return -1;
-    }
-    memset(new_keys, 0xFF, new_n * sizeof(uint64_t));
+    uint64_t *new_keys;
+    int64_t  *new_cnt;
+    void *buf = alloc_table(new_n, &new_keys, &new_cnt);
+    if (!buf) return -1;
+
+    uint32_t live = 0;
 
     for (uint32_t i = 0; i < old_n; i++) {
-        if (old_keys[i] == PAIR_EMPTY || old_keys[i] == PAIR_TOMB) continue;
-        uint32_t idx = pair_hash64(old_keys[i]) & new_mask;
+        uint64_t k = old_keys[i];
+        if (k == PAIR_EMPTY || k == PAIR_TOMB) continue;
+
+        /* Compaction: drop entries whose count has fallen to zero or
+         * below (stale artefacts from incremental decrements). */
+        if (old_cnt[i] <= 0) continue;
+
+        uint32_t idx = pair_hash64(k) & new_mask;
         while (new_keys[idx] != PAIR_EMPTY)
             idx = (idx + 1) & new_mask;
-        new_keys[idx] = old_keys[i];
+        new_keys[idx] = k;
         new_cnt[idx]  = old_cnt[i];
+        live++;
     }
 
+    /* old_keys is the base of the single allocation. */
     free(old_keys);
-    free(old_cnt);
-    pt->keys      = new_keys;
-    pt->counts    = new_cnt;
-    pt->num_slots = new_n;
-    pt->mask      = new_mask;
+    pt->keys        = new_keys;
+    pt->counts      = new_cnt;
+    pt->num_slots   = new_n;
+    pt->mask        = new_mask;
+    pt->num_entries = live;
     return 0;
 }
 
@@ -91,27 +145,65 @@ int TK_HOT tk_pair_table_add(tk_pair_table_t *pt, uint32_t left,
 
     uint64_t key = pack_pair(left, right);
     uint32_t idx = pair_hash64(key) & pt->mask;
+    uint32_t first_tomb = (uint32_t)-1;
 
     for (;;) {
         uint64_t k = pt->keys[idx];
+
         if (k == key) {
             pt->counts[idx] += count;
             return 0;
         }
-        if (k == PAIR_EMPTY || k == PAIR_TOMB) {
-            pt->keys[idx]   = key;
-            pt->counts[idx] = count;
-            pt->num_entries++;
+
+        if (k == PAIR_TOMB) {
+            /* Remember the first tombstone for possible reuse, but
+             * keep probing — the key might exist further along. */
+            if (first_tomb == (uint32_t)-1)
+                first_tomb = idx;
+            idx = (idx + 1) & pt->mask;
+            continue;
+        }
+
+        if (k == PAIR_EMPTY) {
+            /* Key not found.  Insert at the first tombstone if we
+             * passed one; otherwise insert here.  Reusing a tombstone
+             * does NOT increment num_entries — the slot was already
+             * counted when it was first occupied. */
+            if (first_tomb != (uint32_t)-1) {
+                pt->keys[first_tomb]   = key;
+                pt->counts[first_tomb] = count;
+                /* No num_entries++ : tombstone was already counted. */
+            } else {
+                pt->keys[idx]   = key;
+                pt->counts[idx] = count;
+                pt->num_entries++;
+            }
             return 0;
         }
+
+        idx = (idx + 1) & pt->mask;
+    }
+}
+
+/* ── get ──────────────────────────────────────────────────────────── */
+
+int64_t tk_pair_table_get(const tk_pair_table_t *pt,
+                          uint32_t left, uint32_t right) {
+    uint64_t key = pack_pair(left, right);
+    uint32_t idx = pair_hash64(key) & pt->mask;
+
+    for (;;) {
+        uint64_t k = pt->keys[idx];
+        if (k == key)        return pt->counts[idx];
+        if (k == PAIR_EMPTY) return 0;
         idx = (idx + 1) & pt->mask;
     }
 }
 
 /* ── best entry (raw count, no morphological scoring) ─────────────── */
 
-const tk_pair_entry_t *tk_pair_table_best(const tk_pair_table_t *pt) {
-    static tk_pair_entry_t result;
+bool tk_pair_table_best_r(const tk_pair_table_t *pt,
+                          tk_pair_entry_t *out) {
     int64_t  best_count = 0;
     uint64_t best_key   = PAIR_EMPTY;
 
@@ -125,10 +217,19 @@ const tk_pair_entry_t *tk_pair_table_best(const tk_pair_table_t *pt) {
         }
     }
 
-    if (best_key == PAIR_EMPTY) return NULL;
+    if (best_key == PAIR_EMPTY) return false;
 
-    result.left  = pair_left(best_key);
-    result.right = pair_right(best_key);
-    result.count = best_count;
+    out->left  = pair_left(best_key);
+    out->right = pair_right(best_key);
+    out->count = best_count;
+    out->next  = NULL;
+    return true;
+}
+
+/* Legacy API wrapper — returns pointer to caller-invisible static.
+ * Kept so existing call sites don't need to change yet. */
+const tk_pair_entry_t *tk_pair_table_best(const tk_pair_table_t *pt) {
+    static tk_pair_entry_t result;
+    if (!tk_pair_table_best_r(pt, &result)) return NULL;
     return &result;
 }

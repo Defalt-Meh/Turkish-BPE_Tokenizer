@@ -97,7 +97,7 @@ static tk_tokenizer_t *make_turkish_tokenizer(void) {
     if (tk_train(&tk, (const uint8_t *)corpus, strlen(corpus)) != 0) return NULL;
 
     fprintf(stderr, "    trained: vocab=%u merges=%u\n",
-            tk_vocab_size(&tk), tk.vocab.num_merges);
+            tk_vocab_size_of(&tk), tk.vocab.num_merges);
 
     return &tk;
 }
